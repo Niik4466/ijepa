@@ -33,7 +33,9 @@ def make_imagenet1k(
     training=True,
     copy_data=False,
     drop_last=True,
-    subset_file=None
+    subset_file=None,
+    persistent_workers=False,
+    prefetch_factor=None
 ):
     dataset = ImageNet(
         root=root_path,
@@ -49,6 +51,11 @@ def make_imagenet1k(
         dataset=dataset,
         num_replicas=world_size,
         rank=rank)
+    
+    loader_kwargs = {}
+    if prefetch_factor is not None:
+        loader_kwargs['prefetch_factor'] = prefetch_factor
+
     data_loader = torch.utils.data.DataLoader(
         dataset,
         collate_fn=collator,
@@ -57,7 +64,8 @@ def make_imagenet1k(
         drop_last=drop_last,
         pin_memory=pin_mem,
         num_workers=num_workers,
-        persistent_workers=False)
+        persistent_workers=persistent_workers,
+        **loader_kwargs)
     logger.info('ImageNet unsupervised data loader created')
 
     return dataset, data_loader, dist_sampler

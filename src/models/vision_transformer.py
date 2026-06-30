@@ -19,6 +19,10 @@ from src.utils.tensors import (
 from src.masks.utils import apply_masks
 
 
+# Global flag to enable/disable SDPA
+USE_SDPA = False
+
+
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
     """
     grid_size: int of the grid height and width
@@ -135,19 +139,38 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, need_weights=False):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
+        if USE_SDPA and not need_weights and hasattr(nn.functional, 'scaled_dot_product_attention'):
+            # Fast path using PyTorch's native FlashAttention / SDPA kernel
+            head_dim = C // self.num_heads
+            scale_factor = self.scale * math.sqrt(head_dim)
+            if abs(scale_factor - 1.0) > 1e-6:
+                q = q * scale_factor
+            
+            x = nn.functional.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=None,
+                dropout_p=self.attn_drop.p if self.training else 0.0,
+                is_causal=False
+            )
+            x = x.transpose(1, 2).reshape(B, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            return x, None
+        else:
+            # Fallback path (standard slow attention)
+            attn = (q @ k.transpose(-2, -1)) * self.scale
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x, attn
+            x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            x = self.proj(x)
+            x = self.proj_drop(x)
+            return x, attn
 
 
 class Block(nn.Module):
@@ -163,7 +186,7 @@ class Block(nn.Module):
         self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
     def forward(self, x, return_attention=False):
-        y, attn = self.attn(self.norm1(x))
+        y, attn = self.attn(self.norm1(x), need_weights=return_attention)
         if return_attention:
             return attn
         x = x + self.drop_path(y)

@@ -1,6 +1,13 @@
+# Git
+.git/
+.github/
+.git*
+
 *.swp
 *.swo
 __pycache__
+*.pyc
+
 # pixi environments
 !.pixi/config.toml
 .pixi/
@@ -9,3 +16,7 @@ __pycache__
 data/
 logs/
 
+*.md
+benchmark_opts.py
+
+pixi*

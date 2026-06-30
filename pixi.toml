@@ -1,0 +1,19 @@
+[workspace]
+authors = ["Niik4466 <niikk4466@gmail.com>"]
+channels = ["conda-forge"]
+name = "ijepa"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = ">=3.10,<3.12"
+pyyaml = "*"
+numpy = "*"
+submitit = "*"
+nvidia-ml-py = "*"
+
+[pypi-dependencies]
+torch = "*"
+torchvision = "*"

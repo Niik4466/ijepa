@@ -48,6 +48,8 @@ from src.helper import (
     init_model,
     init_opt)
 from src.transforms import make_transforms
+from src.utils.gpu_monitor import GPUMonitor
+import atexit
 
 # --
 log_timings = True
@@ -78,6 +80,13 @@ def main(args, resume_preempt=False):
     copy_data = args['meta']['copy_data']
     pred_depth = args['meta']['pred_depth']
     pred_emb_dim = args['meta']['pred_emb_dim']
+    is_opt_sdpa = args.get('meta', {}).get('opt_sdpa', False)
+    is_opt_compile = args.get('meta', {}).get('opt_compile', False)
+    is_opt_fused_adamw = args.get('meta', {}).get('opt_fused_adamw', False)
+    is_opt_dataloader = args.get('meta', {}).get('opt_dataloader', False)
+
+    import src.models.vision_transformer as vit
+    vit.USE_SDPA = is_opt_sdpa
     if not torch.cuda.is_available():
         device = torch.device('cpu')
     else:
@@ -125,6 +134,15 @@ def main(args, resume_preempt=False):
     folder = args['logging']['folder']
     tag = args['logging']['write_tag']
 
+    # -- MOCK OPTIONS & LOG FOLDER FIX
+    is_mock = args.get('meta', {}).get('mock', False)
+    if is_mock:
+        num_epochs = args['meta']['mock_epochs']
+        load_model = False
+    if is_mock or folder.startswith('$replace_this_'):
+        folder = 'logs'
+    os.makedirs(folder, exist_ok=True)
+
     dump = os.path.join(folder, 'params-ijepa.yaml')
     with open(dump, 'w') as f:
         yaml.dump(args, f)
@@ -140,6 +158,32 @@ def main(args, resume_preempt=False):
     logger.info(f'Initialized (rank/world-size) {rank}/{world_size}')
     if rank > 0:
         logger.setLevel(logging.ERROR)
+
+    # -- Start GPU Monitoring
+    physical_gpu_idx = 0
+    cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+    if cuda_visible:
+        try:
+            physical_gpu_idx = int(cuda_visible.split(',')[0])
+        except Exception:
+            pass
+    # Build GPU CSV filename with timestamp and active optimization flags
+    from datetime import datetime
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    opt_flags_parts = []
+    if is_opt_sdpa:
+        opt_flags_parts.append('sdpa')
+    if is_opt_compile:
+        opt_flags_parts.append('compile')
+    if is_opt_fused_adamw:
+        opt_flags_parts.append('fused_adamw')
+    if is_opt_dataloader:
+        opt_flags_parts.append('dataloader')
+    opt_flags_str = '_'.join(opt_flags_parts) if opt_flags_parts else 'base'
+    gpu_csv_path = os.path.join('data', f'{tag}_gpu_r{rank}_{opt_flags_str}_{ts}.csv')
+    gpu_monitor = GPUMonitor(device_idx=physical_gpu_idx, interval=1.0, csv_path=gpu_csv_path)
+    gpu_monitor.start()
+    atexit.register(gpu_monitor.stop)
 
     # -- log/checkpointing paths
     log_file = os.path.join(folder, f'{tag}_r{rank}.csv')
@@ -178,7 +222,8 @@ def main(args, resume_preempt=False):
         nenc=num_enc_masks,
         npred=num_pred_masks,
         allow_overlap=allow_overlap,
-        min_keep=min_keep)
+        min_keep=min_keep,
+        opt_dataloader=is_opt_dataloader)
 
     transform = make_transforms(
         crop_size=crop_size,
@@ -189,19 +234,51 @@ def main(args, resume_preempt=False):
         color_jitter=color_jitter)
 
     # -- init data-loaders/samplers
-    _, unsupervised_loader, unsupervised_sampler = make_imagenet1k(
-            transform=transform,
+    if is_mock:
+        mock_iters = args['meta'].get('mock_iters', 10)
+        class MockDataset(torch.utils.data.Dataset):
+            def __init__(self, crop_size=224, length=100):
+                self.crop_size = crop_size
+                self.length = length
+            def __len__(self):
+                return self.length
+            def __getitem__(self, index):
+                img = torch.randn(3, self.crop_size, self.crop_size)
+                return img, 0
+
+        dataset = MockDataset(crop_size=crop_size, length=mock_iters * batch_size * world_size)
+        unsupervised_sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset=dataset,
+            num_replicas=world_size,
+            rank=rank)
+        unsupervised_loader = torch.utils.data.DataLoader(
+            dataset,
+            collate_fn=mask_collator,
+            sampler=unsupervised_sampler,
             batch_size=batch_size,
-            collator=mask_collator,
-            pin_mem=pin_mem,
-            training=True,
-            num_workers=num_workers,
-            world_size=world_size,
-            rank=rank,
-            root_path=root_path,
-            image_folder=image_folder,
-            copy_data=copy_data,
-            drop_last=True)
+            drop_last=True,
+            pin_memory=pin_mem,
+            num_workers=0,
+            persistent_workers=False)
+        logger.info('Using Mock Dataset for training')
+    else:
+        persistent_workers = True if (is_opt_dataloader and num_workers > 0) else False
+        prefetch_factor = 3 if (is_opt_dataloader and num_workers > 0) else None
+        _, unsupervised_loader, unsupervised_sampler = make_imagenet1k(
+                transform=transform,
+                batch_size=batch_size,
+                collator=mask_collator,
+                pin_mem=pin_mem,
+                training=True,
+                num_workers=num_workers,
+                world_size=world_size,
+                rank=rank,
+                root_path=root_path,
+                image_folder=image_folder,
+                copy_data=copy_data,
+                drop_last=True,
+                persistent_workers=persistent_workers,
+                prefetch_factor=prefetch_factor)
     ipe = len(unsupervised_loader)
 
     # -- init optimizer and scheduler
@@ -217,12 +294,20 @@ def main(args, resume_preempt=False):
         warmup=warmup,
         num_epochs=num_epochs,
         ipe_scale=ipe_scale,
-        use_bfloat16=use_bfloat16)
-    encoder = DistributedDataParallel(encoder, static_graph=True)
-    predictor = DistributedDataParallel(predictor, static_graph=True)
-    target_encoder = DistributedDataParallel(target_encoder)
+        use_bfloat16=use_bfloat16,
+        opt_fused_adamw=is_opt_fused_adamw)
+    if torch.distributed.is_initialized():
+        encoder = DistributedDataParallel(encoder, static_graph=True)
+        predictor = DistributedDataParallel(predictor, static_graph=True)
+        target_encoder = DistributedDataParallel(target_encoder)
     for p in target_encoder.parameters():
         p.requires_grad = False
+
+    if is_opt_compile and hasattr(torch, 'compile') and torch.cuda.is_available():
+        logger.info("Compiling models with torch.compile...")
+        encoder = torch.compile(encoder, dynamic=True)
+        predictor = torch.compile(predictor, dynamic=True)
+        target_encoder = torch.compile(target_encoder, dynamic=True)
 
     # -- momentum schedule
     momentum_scheduler = (ema[0] + i*(ema[1]-ema[0])/(ipe*num_epochs*ipe_scale)
@@ -313,7 +398,12 @@ def main(args, resume_preempt=False):
                     return loss
 
                 # Step 1. Forward
-                with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
+                autocast_ctx = (
+                    torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bfloat16)
+                    if is_opt_sdpa or is_opt_compile else
+                    torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16)
+                )
+                with autocast_ctx:
                     h = forward_target()
                     z = forward_context()
                     loss = loss_fn(z, h)
@@ -373,6 +463,9 @@ def main(args, resume_preempt=False):
         # -- Save Checkpoint after every epoch
         logger.info('avg. loss %.3f' % loss_meter.avg)
         save_checkpoint(epoch+1)
+
+    gpu_monitor.stop()
+    logger.info(f'Stopped GPU monitor for rank {rank}')
 
 
 if __name__ == "__main__":

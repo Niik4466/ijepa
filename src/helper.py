@@ -116,7 +116,8 @@ def init_opt(
     final_wd=1e-6,
     final_lr=0.0,
     use_bfloat16=False,
-    ipe_scale=1.25
+    ipe_scale=1.25,
+    opt_fused_adamw=False
 ):
     param_groups = [
         {
@@ -138,8 +139,16 @@ def init_opt(
         }
     ]
 
+    opt_kwargs = {}
+    if opt_fused_adamw:
+        import inspect
+        sig = inspect.signature(torch.optim.AdamW)
+        if 'fused' in sig.parameters and torch.cuda.is_available():
+            opt_kwargs['fused'] = True
+            logger.info("Using Fused AdamW optimizer")
+
     logger.info('Using AdamW')
-    optimizer = torch.optim.AdamW(param_groups)
+    optimizer = torch.optim.AdamW(param_groups, **opt_kwargs)
     scheduler = WarmupCosineSchedule(
         optimizer,
         warmup_steps=int(warmup*iterations_per_epoch),

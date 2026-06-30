@@ -29,7 +29,8 @@ class MaskCollator(object):
         nenc=1,
         npred=2,
         min_keep=4,
-        allow_overlap=False
+        allow_overlap=False,
+        opt_dataloader=False
     ):
         super(MaskCollator, self).__init__()
         if not isinstance(input_size, tuple):
@@ -43,6 +44,7 @@ class MaskCollator(object):
         self.npred = npred
         self.min_keep = min_keep  # minimum number of patches to keep
         self.allow_overlap = allow_overlap  # whether to allow overlap b/w enc and pred masks
+        self.opt_dataloader = opt_dataloader
         self._itr_counter = Value('i', -1)  # collator is shared across worker processes
 
     def step(self):
@@ -74,6 +76,17 @@ class MaskCollator(object):
     def _sample_block_mask(self, b_size, acceptable_regions=None):
         h, w = b_size
 
+        if self.opt_dataloader and acceptable_regions is None:
+            top = torch.randint(0, self.height - h, (1,)).item()
+            left = torch.randint(0, self.width - w, (1,)).item()
+            r = torch.arange(top, top + h, dtype=torch.int64)
+            c = torch.arange(left, left + w, dtype=torch.int64)
+            mask = (r.unsqueeze(1) * self.width + c.unsqueeze(0)).flatten()
+            
+            mask_complement = torch.ones((self.height, self.width), dtype=torch.int32)
+            mask_complement[top:top+h, left:left+w] = 0
+            return mask, mask_complement
+
         def constrain_mask(mask, tries=0):
             """ Helper to restrict given mask to a set of acceptable regions """
             N = max(int(len(acceptable_regions)-tries), 0)
@@ -104,8 +117,11 @@ class MaskCollator(object):
                     logger.warning(f'Mask generator says: "Valid mask not found, decreasing acceptable-regions [{tries}]"')
         mask = mask.squeeze()
         # --
+        # -- Convert top and left to integers for slicing
+        top_val = int(top.item() if isinstance(top, torch.Tensor) else top)
+        left_val = int(left.item() if isinstance(left, torch.Tensor) else left)
         mask_complement = torch.ones((self.height, self.width), dtype=torch.int32)
-        mask_complement[top:top+h, left:left+w] = 0
+        mask_complement[top_val:top_val+h, left_val:left_val+w] = 0
         # --
         return mask, mask_complement
 
