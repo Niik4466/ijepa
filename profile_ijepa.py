@@ -33,11 +33,6 @@ def run_profiling():
     
     # Overrides for quick profiling
     args['optimization']['epochs'] = 1
-    # Use smaller model for profiling to avoid CUDA OOM issues
-    model_name = 'vit_base'
-    pred_depth = 6
-    pred_emb_dim = 384
-    batch_size = 4
     if device.type == 'cpu':
         model_name = 'vit_tiny'
         pred_depth = 2
@@ -80,9 +75,9 @@ def run_profiling():
     
     if device.type == 'cuda' and hasattr(torch, 'compile'):
         print("Compiling models for profiling...")
-        encoder = torch.compile(encoder, dynamic=True)
-        predictor = torch.compile(predictor, dynamic=True)
-        target_encoder = torch.compile(target_encoder, dynamic=True)
+        encoder = torch.compile(encoder, dynamic=False)
+        predictor = torch.compile(predictor, dynamic=False)
+        target_encoder = torch.compile(target_encoder, dynamic=False)
     
     # Collator & dummy batch
     mask_collator = MBMaskCollator(
