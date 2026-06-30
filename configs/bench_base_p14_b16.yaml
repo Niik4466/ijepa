@@ -1,7 +1,7 @@
-# Benchmark Config B: vit_base / patch_size 14 / batch_size 16
+# Benchmark Config B: vit_base / patch_size 14 / batch_size 256
 # Medium model, medium batch → balanced workload
 data:
-  batch_size: 16
+  batch_size: 256
   color_jitter_strength: 0.0
   crop_scale:
   - 0.3

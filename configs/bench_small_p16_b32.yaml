@@ -1,7 +1,7 @@
-# Benchmark Config A: vit_small / patch_size 16 / batch_size 32
+# Benchmark Config A: vit_small / patch_size 16 / batch_size 512
 # Smallest model, largest batch → tests throughput scaling
 data:
-  batch_size: 32
+  batch_size: 512
   color_jitter_strength: 0.0
   crop_scale:
   - 0.3

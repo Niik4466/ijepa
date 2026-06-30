@@ -1,7 +1,7 @@
-# Benchmark Config C: vit_large / patch_size 16 / batch_size 4
+# Benchmark Config C: vit_large / patch_size 16 / batch_size 128
 # Largest model, smallest batch → tests compute-bound regime
 data:
-  batch_size: 4
+  batch_size: 128
   color_jitter_strength: 0.0
   crop_scale:
   - 0.3
