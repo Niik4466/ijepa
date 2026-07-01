@@ -146,10 +146,12 @@ for (config, opt), group in grouped_runs:
     # Find the run with the minimum active duration (best stable training loop)
     best_run = group.loc[group['active_dur_s'].idxmin()]
     
+    # Determine iterations (5000 for huge configs, 500 for others)
+    iters = 5000.0 if 'huge' in config else 500.0
     summary_records.append({
         'config': config,
         'opt': opt,
-        'step_time_ms': (best_run['active_dur_s'] * 1000.0) / 500.0,
+        'step_time_ms': (best_run['active_dur_s'] * 1000.0) / iters,
         'avg_gpu': best_run['avg_gpu'],
         'max_gpu': best_run['max_gpu'],
         'avg_mem': best_run['avg_mem'],
@@ -170,7 +172,11 @@ base_energies = df_summary[df_summary['opt'] == 'Level 0 (Base)'].set_index('con
 config_labels = {
     'small_p16_b32': 'ViT-Small (b512)',
     'base_p14_b16': 'ViT-Base (b256)',
-    'large_p16_b4': 'ViT-Large (b128)'
+    'large_p16_b4': 'ViT-Large (b128)',
+    'huge_p16_b8': 'ViT-Huge (b8)',
+    'huge_p16_b16': 'ViT-Huge (b16)',
+    'huge_p16_b32': 'ViT-Huge (b32)',
+    'huge_p16_b64': 'ViT-Huge (b64)'
 }
 df_summary['config_label'] = df_summary['config'].map(config_labels)
 
